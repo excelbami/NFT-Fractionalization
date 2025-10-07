@@ -11,6 +11,10 @@
 (define-constant ERR_TRANSFER_FAILED (err u107))
 (define-constant ERR_MINT_FAILED (err u108))
 (define-constant ERR_BURN_FAILED (err u109))
+(define-constant ERR_BUYOUT_EXISTS (err u110))
+(define-constant ERR_NO_BUYOUT (err u111))
+(define-constant ERR_BUYOUT_NOT_INITIATOR (err u112))
+(define-constant ERR_INSUFFICIENT_FRACTIONS (err u113))
 
 (define-fungible-token fraction-token)
 
@@ -32,6 +36,17 @@
 
 (define-map user-balances principal uint)
 (define-map user-nft-fractions { user: principal, nft-contract: principal, nft-id: uint } uint)
+
+(define-map buyout-proposals
+  { nft-contract: principal, nft-id: uint }
+  {
+    initiator: principal,
+    price-per-fraction: uint,
+    fractions-acquired: uint,
+    total-cost: uint,
+    is-active: bool
+  }
+)
 
 (define-read-only (get-name)
   (ok (var-get token-name))
@@ -63,6 +78,10 @@
 
 (define-read-only (get-user-fraction-balance (user principal) (nft-contract principal) (nft-id uint))
   (default-to u0 (map-get? user-nft-fractions { user: user, nft-contract: nft-contract, nft-id: nft-id }))
+)
+
+(define-read-only (get-buyout-proposal (nft-contract principal) (nft-id uint))
+  (map-get? buyout-proposals { nft-contract: nft-contract, nft-id: nft-id })
 )
 
 (define-public (transfer (amount uint) (from principal) (to principal) (memo (optional (buff 34))))
@@ -214,6 +233,121 @@
       nft-id: nft-id,
       amount: fraction-amount,
       price: price-per-fraction
+    })
+    (ok true)
+  )
+)
+
+(define-public (propose-buyout 
+  (nft-contract principal) 
+  (nft-id uint) 
+  (price-per-fraction uint))
+  (let (
+    (nft-key { nft-contract: nft-contract, nft-id: nft-id })
+    (nft-data (unwrap! (map-get? fractionalized-nfts nft-key) ERR_NFT_NOT_FOUND))
+    (total-fractions (get total-fractions nft-data))
+    (total-buyout-cost (* price-per-fraction total-fractions))
+  )
+    (asserts! (get is-active nft-data) ERR_NFT_NOT_FOUND)
+    (asserts! (> price-per-fraction u0) ERR_INVALID_AMOUNT)
+    (asserts! (is-none (map-get? buyout-proposals nft-key)) ERR_BUYOUT_EXISTS)
+    
+    (map-set buyout-proposals nft-key {
+      initiator: tx-sender,
+      price-per-fraction: price-per-fraction,
+      fractions-acquired: u0,
+      total-cost: u0,
+      is-active: true
+    })
+    
+    (print {
+      action: "propose-buyout",
+      initiator: tx-sender,
+      nft-contract: nft-contract,
+      nft-id: nft-id,
+      price-per-fraction: price-per-fraction,
+      total-cost: total-buyout-cost
+    })
+    (ok true)
+  )
+)
+
+(define-public (accept-buyout 
+  (nft-contract principal) 
+  (nft-id uint) 
+  (fraction-amount uint))
+  (let (
+    (nft-key { nft-contract: nft-contract, nft-id: nft-id })
+    (buyout (unwrap! (map-get? buyout-proposals nft-key) ERR_NO_BUYOUT))
+    (nft-data (unwrap! (map-get? fractionalized-nfts nft-key) ERR_NFT_NOT_FOUND))
+    (user-fractions (get-user-fraction-balance tx-sender nft-contract nft-id))
+    (payment-amount (* fraction-amount (get price-per-fraction buyout)))
+    (initiator (get initiator buyout))
+    (new-fractions-acquired (+ (get fractions-acquired buyout) fraction-amount))
+    (new-total-cost (+ (get total-cost buyout) payment-amount))
+    (total-fractions (get total-fractions nft-data))
+  )
+    (asserts! (get is-active buyout) ERR_NO_BUYOUT)
+    (asserts! (> fraction-amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (>= user-fractions fraction-amount) ERR_INSUFFICIENT_FRACTIONS)
+    
+    (try! (stx-transfer? payment-amount initiator tx-sender))
+    (try! (ft-transfer? fraction-token fraction-amount tx-sender initiator))
+    
+    (map-set user-balances tx-sender (- (get-balance-uint tx-sender) fraction-amount))
+    (map-set user-balances initiator (+ (get-balance-uint initiator) fraction-amount))
+    
+    (map-set user-nft-fractions 
+      { user: tx-sender, nft-contract: nft-contract, nft-id: nft-id }
+      (- user-fractions fraction-amount))
+    
+    (map-set user-nft-fractions 
+      { user: initiator, nft-contract: nft-contract, nft-id: nft-id }
+      (+ (get-user-fraction-balance initiator nft-contract nft-id) fraction-amount))
+    
+    (map-set buyout-proposals nft-key (merge buyout {
+      fractions-acquired: new-fractions-acquired,
+      total-cost: new-total-cost
+    }))
+    
+    (print {
+      action: "accept-buyout",
+      seller: tx-sender,
+      initiator: initiator,
+      nft-contract: nft-contract,
+      nft-id: nft-id,
+      fraction-amount: fraction-amount,
+      payment: payment-amount,
+      total-acquired: new-fractions-acquired
+    })
+    
+    (if (is-eq new-fractions-acquired total-fractions)
+      (begin
+        (map-set buyout-proposals nft-key (merge buyout { is-active: false }))
+        (print { action: "buyout-complete", initiator: initiator })
+        (ok true)
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-public (cancel-buyout (nft-contract principal) (nft-id uint))
+  (let (
+    (nft-key { nft-contract: nft-contract, nft-id: nft-id })
+    (buyout (unwrap! (map-get? buyout-proposals nft-key) ERR_NO_BUYOUT))
+  )
+    (asserts! (is-eq tx-sender (get initiator buyout)) ERR_BUYOUT_NOT_INITIATOR)
+    (asserts! (get is-active buyout) ERR_NO_BUYOUT)
+    (asserts! (is-eq (get fractions-acquired buyout) u0) ERR_INSUFFICIENT_BALANCE)
+    
+    (map-set buyout-proposals nft-key (merge buyout { is-active: false }))
+    
+    (print {
+      action: "cancel-buyout",
+      initiator: tx-sender,
+      nft-contract: nft-contract,
+      nft-id: nft-id
     })
     (ok true)
   )

@@ -17,6 +17,7 @@ NFT Fractionalization allows you to split a single NFT into multiple fungible to
 - 🔄 **Reconstruct** original NFT by collecting all fractions
 - 💵 **Price discovery** through fraction trading
 - 🔒 **Secure custody** of original NFTs in contract
+- 💎 **Instant Buyout** mechanism for acquiring complete ownership
 
 ## 🚀 Quick Start
 
@@ -76,6 +77,35 @@ clarinet check
 )
 ```
 
+### 5. Propose a Buyout
+
+```clarity
+(contract-call? .nft-fractionalization propose-buyout
+  .my-nft-contract  ; NFT contract principal
+  u1                ; NFT ID
+  u150              ; Price per fraction (premium over market)
+)
+```
+
+### 6. Accept a Buyout Offer
+
+```clarity
+(contract-call? .nft-fractionalization accept-buyout
+  .my-nft-contract  ; NFT contract principal
+  u1                ; NFT ID
+  u25               ; Number of fractions to sell
+)
+```
+
+### 7. Cancel a Buyout Proposal
+
+```clarity
+(contract-call? .nft-fractionalization cancel-buyout
+  .my-nft-contract  ; NFT contract principal
+  u1                ; NFT ID
+)
+```
+
 ## 🔍 Read-Only Functions
 
 ### Get Fraction Balance
@@ -102,13 +132,25 @@ clarinet check
 )
 ```
 
+### Get Buyout Proposal
+```clarity
+(contract-call? .nft-fractionalization get-buyout-proposal
+  .nft-contract     ; NFT contract
+  u1                ; NFT ID
+)
+```
+
 ## 🏗️ Contract Architecture
 
 ```
 NFT Owner → Fractionalize → Fraction Tokens
     ↓
 Multiple Fraction Holders ← → Trade Fractions
-    ↓
+    ↓                          ↓
+    ↓                    Buyout Proposal
+    ↓                          ↓
+    ↓                    Accept Buyout ← Premium Price
+    ↓                          ↓
 Collect All Fractions → Reconstruct Original NFT
 ```
 
@@ -134,9 +176,13 @@ clarinet console
 | `buy-fractions` | Purchase fraction tokens | Public |
 | `sell-fractions` | List fractions for sale | Public |
 | `reconstruct-nft` | Rebuild original NFT | Public |
+| `propose-buyout` | Create buyout offer | Public |
+| `accept-buyout` | Sell fractions to buyout | Public |
+| `cancel-buyout` | Cancel buyout proposal | Public |
 | `transfer` | Transfer fraction tokens | Public |
 | `get-balance` | Check fraction balance | Read-only |
 | `get-fractionalized-nft` | Get NFT details | Read-only |
+| `get-buyout-proposal` | Get buyout offer details | Read-only |
 
 ## ⚠️ Important Notes
 
@@ -144,6 +190,8 @@ clarinet console
 - 🧮 You need **ALL** fractions to reconstruct the original NFT
 - 💰 Fraction prices are set by the original owner
 - 🔄 Transfers follow SIP-010 fungible token standard
+- 💎 Buyout mechanism enables fast acquisition without collecting all fractions individually
+- 🚀 Once all fractions are acquired via buyout, the initiator can reconstruct the NFT
 
 ## 🛡️ Security Features
 
