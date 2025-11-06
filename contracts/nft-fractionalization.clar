@@ -1,6 +1,5 @@
 (impl-trait .sip-010-trait.sip-010-trait)
 
-(define-constant CONTRACT_OWNER tx-sender)
 (define-constant ERR_OWNER_ONLY (err u100))
 (define-constant ERR_NOT_TOKEN_OWNER (err u101))
 (define-constant ERR_INSUFFICIENT_BALANCE (err u102))
@@ -86,7 +85,7 @@
 
 (define-public (transfer (amount uint) (from principal) (to principal) (memo (optional (buff 34))))
   (begin
-    (asserts! (or (is-eq from tx-sender) (is-eq from CONTRACT_OWNER)) ERR_NOT_TOKEN_OWNER)
+    (asserts! (is-eq from tx-sender) ERR_NOT_TOKEN_OWNER)
     (asserts! (> amount u0) ERR_INVALID_AMOUNT)
     (asserts! (>= (get-balance-uint from) amount) ERR_INSUFFICIENT_BALANCE)
     
@@ -140,6 +139,29 @@
       nft-id: nft-id, 
       total-fractions: total-fractions,
       owner: tx-sender
+    })
+    (ok true)
+  )
+)
+
+(define-public (update-fraction-price 
+  (nft-contract principal) 
+  (nft-id uint) 
+  (new-price uint))
+  (let (
+    (nft-key { nft-contract: nft-contract, nft-id: nft-id })
+    (nft-data (unwrap! (map-get? fractionalized-nfts nft-key) ERR_NFT_NOT_FOUND))
+    (owner (get original-owner nft-data))
+  )
+    (asserts! (get is-active nft-data) ERR_NFT_NOT_FOUND)
+    (asserts! (is-eq owner tx-sender) ERR_OWNER_ONLY)
+    (asserts! (> new-price u0) ERR_INVALID_AMOUNT)
+    (map-set fractionalized-nfts nft-key (merge nft-data { fraction-price: new-price }))
+    (print { 
+      action: "update-price", 
+      nft-contract: nft-contract, 
+      nft-id: nft-id, 
+      price: new-price 
     })
     (ok true)
   )
