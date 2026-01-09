@@ -47,6 +47,16 @@
   }
 )
 
+(define-map dividend-pools
+  { nft-contract: principal, nft-id: uint }
+  { acc-per-fraction: uint, total-deposited: uint }
+)
+
+(define-map user-dividend-acc
+  { user: principal, nft-contract: principal, nft-id: uint }
+  uint
+)
+
 (define-read-only (get-name)
   (ok (var-get token-name))
 )
@@ -81,6 +91,29 @@
 
 (define-read-only (get-buyout-proposal (nft-contract principal) (nft-id uint))
   (map-get? buyout-proposals { nft-contract: nft-contract, nft-id: nft-id })
+)
+
+(define-read-only (get-dividend-pool (nft-contract principal) (nft-id uint))
+  (map-get? dividend-pools { nft-contract: nft-contract, nft-id: nft-id })
+)
+
+(define-read-only (get-claimable-dividends (user principal) (nft-contract principal) (nft-id uint))
+  (let (
+    (nft-key { nft-contract: nft-contract, nft-id: nft-id })
+    (pool-opt (map-get? dividend-pools nft-key))
+  )
+    (if (is-none pool-opt)
+      (ok u0)
+      (let (
+        (pool (unwrap! pool-opt ERR_NFT_NOT_FOUND))
+        (user-fractions (get-user-fraction-balance user nft-contract nft-id))
+        (last-acc (default-to u0 (map-get? user-dividend-acc { user: user, nft-contract: nft-contract, nft-id: nft-id })))
+        (delta (if (> (get acc-per-fraction pool) last-acc) (- (get acc-per-fraction pool) last-acc) u0))
+      )
+        (ok (* user-fractions delta))
+      )
+    )
+  )
 )
 
 (define-public (transfer (amount uint) (from principal) (to principal) (memo (optional (buff 34))))
@@ -370,6 +403,60 @@
       initiator: tx-sender,
       nft-contract: nft-contract,
       nft-id: nft-id
+    })
+    (ok true)
+  )
+)
+
+(define-public (deposit-dividends 
+  (nft-contract principal) 
+  (nft-id uint) 
+  (amount uint))
+  (let (
+    (nft-key { nft-contract: nft-contract, nft-id: nft-id })
+    (nft-data (unwrap! (map-get? fractionalized-nfts nft-key) ERR_NFT_NOT_FOUND))
+    (total-fractions (get total-fractions nft-data))
+    (prev-pool (default-to { acc-per-fraction: u0, total-deposited: u0 } (map-get? dividend-pools nft-key)))
+    (acc-increment (if (> total-fractions u0) (/ amount total-fractions) u0))
+    (new-acc (+ (get acc-per-fraction prev-pool) acc-increment))
+    (new-total (+ (get total-deposited prev-pool) amount))
+  )
+    (asserts! (get is-active nft-data) ERR_NFT_NOT_FOUND)
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (map-set dividend-pools nft-key { acc-per-fraction: new-acc, total-deposited: new-total })
+    (print { 
+      action: "deposit-dividends", 
+      nft-contract: nft-contract, 
+      nft-id: nft-id, 
+      amount: amount,
+      acc: new-acc
+    })
+    (ok true)
+  )
+)
+
+(define-public (claim-dividends (nft-contract principal) (nft-id uint))
+  (let (
+    (recipient tx-sender)
+    (nft-key { nft-contract: nft-contract, nft-id: nft-id })
+    (nft-data (unwrap! (map-get? fractionalized-nfts nft-key) ERR_NFT_NOT_FOUND))
+    (pool (unwrap! (map-get? dividend-pools nft-key) ERR_NFT_NOT_FOUND))
+    (user-fractions (get-user-fraction-balance recipient nft-contract nft-id))
+    (last-acc (default-to u0 (map-get? user-dividend-acc { user: recipient, nft-contract: nft-contract, nft-id: nft-id })))
+    (delta (if (> (get acc-per-fraction pool) last-acc) (- (get acc-per-fraction pool) last-acc) u0))
+    (payout (* user-fractions delta))
+  )
+    (asserts! (get is-active nft-data) ERR_NFT_NOT_FOUND)
+    (asserts! (> payout u0) ERR_INVALID_AMOUNT)
+    (try! (as-contract (stx-transfer? payout tx-sender recipient)))
+    (map-set user-dividend-acc { user: recipient, nft-contract: nft-contract, nft-id: nft-id } (get acc-per-fraction pool))
+    (print { 
+      action: "claim-dividends", 
+      nft-contract: nft-contract, 
+      nft-id: nft-id, 
+      user: recipient, 
+      amount: payout 
     })
     (ok true)
   )
