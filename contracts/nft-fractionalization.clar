@@ -476,3 +476,109 @@
     (get-owner (uint) (response (optional principal) uint))
   )
 )
+
+(define-constant ERR_LISTING_EXISTS (err u114))
+(define-constant ERR_LISTING_NOT_FOUND (err u115))
+(define-constant ERR_WRONG_SELLER (err u116))
+(define-constant ERR_SELF_BUY (err u117))
+
+(define-map market-listings
+  { nft-contract: principal, nft-id: uint, seller: principal }
+  { amount: uint, price: uint }
+)
+
+(define-public (list-fractions-for-sale 
+  (nft-contract principal) 
+  (nft-id uint) 
+  (amount uint) 
+  (price uint))
+  (let (
+    (listing-key { nft-contract: nft-contract, nft-id: nft-id, seller: tx-sender })
+    (user-fractions (get-user-fraction-balance tx-sender nft-contract nft-id))
+  )
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (> price u0) ERR_INVALID_AMOUNT)
+    (asserts! (>= user-fractions amount) ERR_INSUFFICIENT_BALANCE)
+    (asserts! (is-none (map-get? market-listings listing-key)) ERR_LISTING_EXISTS)
+    
+    (try! (ft-transfer? fraction-token amount tx-sender (as-contract tx-sender)))
+    
+    (map-set user-balances tx-sender (- (get-balance-uint tx-sender) amount))
+    (map-set user-nft-fractions 
+      { user: tx-sender, nft-contract: nft-contract, nft-id: nft-id }
+      (- user-fractions amount))
+      
+    (map-set market-listings listing-key { amount: amount, price: price })
+    
+    (print { 
+      action: "list-for-sale", 
+      seller: tx-sender, 
+      nft-contract: nft-contract, 
+      nft-id: nft-id, 
+      amount: amount, 
+      price: price 
+    })
+    (ok true)
+  )
+)
+
+(define-public (unlist-fractions (nft-contract principal) (nft-id uint))
+  (let (
+    (seller tx-sender)
+    (listing-key { nft-contract: nft-contract, nft-id: nft-id, seller: seller })
+    (listing (unwrap! (map-get? market-listings listing-key) ERR_LISTING_NOT_FOUND))
+    (amount (get amount listing))
+  )
+    (try! (as-contract (ft-transfer? fraction-token amount tx-sender seller)))
+    
+    (map-set user-balances seller (+ (get-balance-uint seller) amount))
+    (map-set user-nft-fractions 
+      { user: seller, nft-contract: nft-contract, nft-id: nft-id }
+      (+ (get-user-fraction-balance seller nft-contract nft-id) amount))
+      
+    (map-delete market-listings listing-key)
+    
+    (print { 
+      action: "unlist-fractions", 
+      seller: seller, 
+      nft-contract: nft-contract, 
+      nft-id: nft-id 
+    })
+    (ok true)
+  )
+)
+
+(define-public (buy-listing (nft-contract principal) (nft-id uint) (seller principal))
+  (let (
+    (buyer tx-sender)
+    (listing-key { nft-contract: nft-contract, nft-id: nft-id, seller: seller })
+    (listing (unwrap! (map-get? market-listings listing-key) ERR_LISTING_NOT_FOUND))
+    (amount (get amount listing))
+    (price (get price listing))
+    (total-cost (* amount price))
+  )
+    (asserts! (not (is-eq buyer seller)) ERR_SELF_BUY)
+    
+    (try! (stx-transfer? total-cost buyer seller))
+    (try! (as-contract (ft-transfer? fraction-token amount tx-sender buyer)))
+    
+    (map-set user-balances buyer (+ (get-balance-uint buyer) amount))
+    (map-set user-nft-fractions 
+      { user: buyer, nft-contract: nft-contract, nft-id: nft-id }
+      (+ (get-user-fraction-balance buyer nft-contract nft-id) amount))
+      
+    (map-delete market-listings listing-key)
+    
+    (print { 
+      action: "buy-listing", 
+      buyer: buyer, 
+      seller: seller, 
+      nft-contract: nft-contract, 
+      nft-id: nft-id, 
+      amount: amount, 
+      price: price,
+      cost: total-cost
+    })
+    (ok true)
+  )
+)
