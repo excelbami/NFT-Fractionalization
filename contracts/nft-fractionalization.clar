@@ -582,3 +582,71 @@
     (ok true)
   )
 )
+
+(define-constant ERR_BUYBACK_DISABLED (err u118))
+(define-constant ERR_INSUFFICIENT_POOL (err u119))
+
+(define-map buyback-pools
+  { nft-contract: principal, nft-id: uint }
+  { price-per-fraction: uint, pool-balance: uint }
+)
+
+(define-public (setup-buyback-pool (nft-contract principal) (nft-id uint) (price uint))
+  (let (
+    (nft-key { nft-contract: nft-contract, nft-id: nft-id })
+    (nft-data (unwrap! (map-get? fractionalized-nfts nft-key) ERR_NFT_NOT_FOUND))
+  )
+    (asserts! (is-eq (get original-owner nft-data) tx-sender) ERR_OWNER_ONLY)
+    (map-set buyback-pools nft-key { price-per-fraction: price, pool-balance: u0 })
+    (ok true)
+  )
+)
+
+(define-public (fund-buyback-pool (nft-contract principal) (nft-id uint) (amount uint))
+  (let (
+    (nft-key { nft-contract: nft-contract, nft-id: nft-id })
+    (pool (unwrap! (map-get? buyback-pools nft-key) ERR_BUYBACK_DISABLED))
+  )
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (map-set buyback-pools nft-key (merge pool { pool-balance: (+ (get pool-balance pool) amount) }))
+    (ok true)
+  )
+)
+
+(define-public (redeem-fractions-for-stx (nft-contract principal) (nft-id uint) (amount uint))
+  (let (
+    (nft-key { nft-contract: nft-contract, nft-id: nft-id })
+    (nft-data (unwrap! (map-get? fractionalized-nfts nft-key) ERR_NFT_NOT_FOUND))
+    (pool (unwrap! (map-get? buyback-pools nft-key) ERR_BUYBACK_DISABLED))
+    (user-fractions (get-user-fraction-balance tx-sender nft-contract nft-id))
+    (total-stx (* amount (get price-per-fraction pool)))
+    (recipient tx-sender)
+  )
+    (asserts! (>= user-fractions amount) ERR_INSUFFICIENT_BALANCE)
+    (asserts! (>= (get pool-balance pool) total-stx) ERR_INSUFFICIENT_POOL)
+    
+    (try! (ft-burn? fraction-token amount tx-sender))
+    (try! (as-contract (stx-transfer? total-stx tx-sender recipient)))
+    
+    (map-set user-balances tx-sender (- (get-balance-uint tx-sender) amount))
+    (map-set user-nft-fractions 
+      { user: tx-sender, nft-contract: nft-contract, nft-id: nft-id }
+      (- user-fractions amount))
+      
+    (map-set buyback-pools nft-key (merge pool { pool-balance: (- (get pool-balance pool) total-stx) }))
+    
+    (map-set fractionalized-nfts nft-key (merge nft-data { 
+      total-fractions: (- (get total-fractions nft-data) amount)
+    }))
+    
+    (print { 
+      action: "redeem-buyback", 
+      user: recipient, 
+      nft-contract: nft-contract, 
+      nft-id: nft-id, 
+      amount: amount, 
+      stx-received: total-stx 
+    })
+    (ok true)
+  )
+)
